@@ -42,19 +42,19 @@ This is called *regime dependence*, and it is the central challenge for attentio
 
 All seven models share an identical backbone: a transformer encoder that processes 8-day sequences of 158 stock-level features. The backbone contains two attention sub-layers:
 
-- **Temporal self-attention** operates along the time axis. For a single stock with an 8-day history, it computes attention weights between every pair of days, allowing day \(t\) to attend to information from days \(t-7\) through \(t\). This captures patterns like "the trend reversed 3 days ago" or "yesterday's volume spike matters more than last week's."
+- **Temporal self-attention** operates along the time axis. For a single stock with an 8-day history, it computes attention weights between every pair of days, allowing day $t$ to attend to information from days $t-7$ through $t$. This captures patterns like "the trend reversed 3 days ago" or "yesterday's volume spike matters more than last week's."
 
 - **Spatial cross-attention** operates along the feature axis. It computes attention weights between the 158 stock-level features, allowing the model to learn that "momentum features should be weighted together" or "volume features should suppress volatility features when both are elevated."
 
-The 63 market-level features (index returns and volatilities) enter the model through a sub-network called a *gate*, which sits *before* the transformer backbone. The gate's job is to produce a 158-dimensional vector \(\mathbf{w} \in \mathbb{R}^{158}\) of feature importance weights. Each stock-level feature \(x_j\) is multiplied element-wise by its gate weight \(w_j\) before entering the transformer: \(\tilde{x}_j = w_j \cdot x_j\). This means the gate can *amplify* features that are useful in the current market regime and *suppress* features that are misleading.
+The 63 market-level features (index returns and volatilities) enter the model through a sub-network called a *gate*, which sits *before* the transformer backbone. The gate's job is to produce a 158-dimensional vector $\mathbf{w} \in \mathbb{R}^{158}$ of feature importance weights. Each stock-level feature $x_j$ is multiplied element-wise by its gate weight $w_j$ before entering the transformer: $\tilde{x}_j = w_j \cdot x_j$. This means the gate can *amplify* features that are useful in the current market regime and *suppress* features that are misleading.
 
-The seven architectures differ only in *how the gate computes \(\mathbf{w}\) from the 63 market features*. The transformer backbone, the training procedure, and all other components are identical. This design isolates the gate mechanism as the single experimental variable.
+The seven architectures differ only in *how the gate computes $\mathbf{w}$ from the 63 market features*. The transformer backbone, the training procedure, and all other components are identical. This design isolates the gate mechanism as the single experimental variable.
 
 | Model | How Market Context Modulates Attention | Key Mechanism |
 |-------|----------------------------------------|---------------|
-| **Base MASTER** | Linear gate: \(\mathbf{w} = \mathbf{A} \mathbf{m} + \mathbf{b}\) | One learned matrix |
+| **Base MASTER** | Linear gate: $\mathbf{w} = \mathbf{A} \mathbf{m} + \mathbf{b}$ | One learned matrix |
 | **MoE** | Three expert gates + router network | Router selects which expert's mask to apply |
-| **LGBM-Gate** | LightGBM tree predicts \(\mathbf{w}\); blended with neural prior | Tree learns threshold splits on market features |
+| **LGBM-Gate** | LightGBM tree predicts $\mathbf{w}$; blended with neural prior | Tree learns threshold splits on market features |
 | **BiLSTM** | Bidirectional LSTM replaces temporal self-attention; linear gate | Sequential pattern detection over 8-day window |
 | **LGBM-LeafInput** | Tree leaf index embedded and injected into spatial attention | Discrete regime ID fed to transformer |
 | **Cross-Attn Gate** | Market features query stock features via cross-attention | Market "looks at" stocks to decide attention |
@@ -64,15 +64,15 @@ The following subsections describe each architecture in detail, including the da
 
 ### 2.1 Base MASTER — Linear Attention Modulation
 
-**Data flow.** The 63 market features \(\mathbf{m} \in \mathbb{R}^{63}\) pass through a single linear (fully-connected) layer with weight matrix \(\mathbf{A} \in \mathbb{R}^{158 \times 63}\) and bias \(\mathbf{b} \in \mathbb{R}^{158}\):
+**Data flow.** The 63 market features $\mathbf{m} \in \mathbb{R}^{63}$ pass through a single linear (fully-connected) layer with weight matrix $\mathbf{A} \in \mathbb{R}^{158 \times 63}$ and bias $\mathbf{b} \in \mathbb{R}^{158}$:
 
-\[
+$$
 \mathbf{w} = \mathbf{A}\mathbf{m} + \mathbf{b}
-\]
+$$
 
-The resulting 158-dimensional vector \(\mathbf{w}\) is the attention mask. Each stock-level feature \(x_j\) is multiplied by \(w_j\), producing modulated features \(\tilde{x}_j = w_j \cdot x_j\) for \(j = 1,\ldots,158\). These modulated features then enter the standard transformer backbone.
+The resulting 158-dimensional vector $\mathbf{w}$ is the attention mask. Each stock-level feature $x_j$ is multiplied by $w_j$, producing modulated features $\tilde{x}_j = w_j \cdot x_j$ for $j = 1,\ldots,158$. These modulated features then enter the standard transformer backbone.
 
-**What it learns.** The matrix \(\mathbf{A}\) encodes 158 × 63 = 9,954 parameters. Each row of \(\mathbf{A}\) tells us how much each market feature contributes to the weight of a specific stock feature. For example, if row 20 (corresponding to MA20, the 20-day momentum feature) has a large negative entry in the column for VN100_RET_STD_10, the model learns: "when market volatility is high, reduce attention to momentum."
+**What it learns.** The matrix $\mathbf{A}$ encodes 158 × 63 = 9,954 parameters. Each row of $\mathbf{A}$ tells us how much each market feature contributes to the weight of a specific stock feature. For example, if row 20 (corresponding to MA20, the 20-day momentum feature) has a large negative entry in the column for VN100_RET_STD_10, the model learns: "when market volatility is high, reduce attention to momentum."
 
 **Why it's the baseline.** This is the simplest possible integration of market context—a single linear transformation. There is no non-linearity (beyond what the transformer itself provides downstream), no regime partitioning, no expert specialization. If this model performs nearly as well as the more complex gates, the added complexity is not buying predictive power. Its simplicity also makes it the most *stable*: with only ~10K gate parameters, different random seeds converge to similar solutions.
 
@@ -80,19 +80,19 @@ The resulting 158-dimensional vector \(\mathbf{w}\) is the attention mask. Each 
 
 ### 2.2 MoE — Multi-Expert Attention Routing
 
-**Data flow.** The MoE gate contains three independent *expert* sub-networks, each structurally identical to the Base MASTER's linear gate (a 63 → 158 linear layer). In parallel, a *router* network—another linear layer mapping \(\mathbb{R}^{63} \to \mathbb{R}^3\) followed by a softmax—produces a probability distribution over the three experts:
+**Data flow.** The MoE gate contains three independent *expert* sub-networks, each structurally identical to the Base MASTER's linear gate (a 63 → 158 linear layer). In parallel, a *router* network—another linear layer mapping $\mathbb{R}^{63} \to \mathbb{R}^3$ followed by a softmax—produces a probability distribution over the three experts:
 
-\[
+$$
 \mathbf{p} = \text{softmax}(\mathbf{R}\mathbf{m}), \quad \mathbf{p} \in \mathbb{R}^3, \quad \sum_{k=1}^3 p_k = 1
-\]
+$$
 
-Each expert \(k\) produces its own attention mask \(\mathbf{w}^{(k)} = \mathbf{A}^{(k)}\mathbf{m} + \mathbf{b}^{(k)}\). The final mask is a weighted blend:
+Each expert $k$ produces its own attention mask $\mathbf{w}^{(k)} = \mathbf{A}^{(k)}\mathbf{m} + \mathbf{b}^{(k)}$. The final mask is a weighted blend:
 
-\[
+$$
 \mathbf{w} = \sum_{k=1}^{3} p_k \cdot \mathbf{w}^{(k)}
-\]
+$$
 
-During training, we also add a small Gaussian noise term to the router logits (\(\sigma = 0.02\)) to encourage exploration—the router occasionally tries a different expert than its top choice, preventing premature convergence to a single expert. A load-balancing penalty (\(\lambda = 0.001\)) discourages the router from always selecting the same expert.
+During training, we also add a small Gaussian noise term to the router logits ($\sigma = 0.02$) to encourage exploration—the router occasionally tries a different expert than its top choice, preventing premature convergence to a single expert. A load-balancing penalty ($\lambda = 0.001$) discourages the router from always selecting the same expert.
 
 **What it learns.** Ideally, the three experts specialize. Expert 0 might learn high attention to momentum features, becoming the "bull market" expert. Expert 1 might learn high attention to low-volatility and quality features, becoming the "bear market" expert. Expert 2 might learn to attend to mean-reversion signals, becoming the "choppy market" expert. The router learns to blend them based on current conditions.
 
@@ -104,17 +104,17 @@ During training, we also add a small Gaussian noise term to the router logits (\
 
 **Data flow.** This gate replaces the linear layer with a LightGBM regression tree. LightGBM is a gradient-boosted decision tree implementation optimized for speed and memory efficiency. The tree takes the 63 market features as input and outputs a 158-dimensional vector of predicted feature weights:
 
-\[
+$$
 \mathbf{w}^{\text{tree}} = \text{LGBM}(\mathbf{m}), \quad \mathbf{w}^{\text{tree}} \in \mathbb{R}^{158}
-\]
+$$
 
-The tree is trained to predict feature importance weights that minimize the transformer's training loss. Simultaneously, a neural prior \(\mathbf{w}^{\text{neural}} = \mathbf{A}\mathbf{m} + \mathbf{b}\) (identical to the Base MASTER gate) is computed. The final weight is a convex combination:
+The tree is trained to predict feature importance weights that minimize the transformer's training loss. Simultaneously, a neural prior $\mathbf{w}^{\text{neural}} = \mathbf{A}\mathbf{m} + \mathbf{b}$ (identical to the Base MASTER gate) is computed. The final weight is a convex combination:
 
-\[
+$$
 \mathbf{w} = (1 - \alpha) \cdot \mathbf{w}^{\text{neural}} + \alpha \cdot \mathbf{w}^{\text{tree}}, \quad \alpha = 0.2
-\]
+$$
 
-The mixing coefficient \(\alpha = 0.2\) means the tree contributes 20% and the neural prior contributes 80%. The tree acts as a *correction term*—the neural gate provides a stable baseline, and the tree adjusts it when market conditions match a learned threshold rule.
+The mixing coefficient $\alpha = 0.2$ means the tree contributes 20% and the neural prior contributes 80%. The tree acts as a *correction term*—the neural gate provides a stable baseline, and the tree adjusts it when market conditions match a learned threshold rule.
 
 **Tree hyperparameters.** The LightGBM uses 31 leaves, a learning rate of 0.05, and 300 estimators. These settings produce a moderately complex tree that can capture non-linear regime boundaries without overfitting. The tree is retrained at each epoch on the current batch of training data.
 
@@ -124,13 +124,13 @@ The mixing coefficient \(\alpha = 0.2\) means the tree contributes 20% and the n
 
 ### 2.4 BiLSTM — Sequential Attention Over Time
 
-**Data flow.** This architecture modifies the transformer backbone itself, not just the gate. The temporal self-attention sub-layer is replaced by a bidirectional LSTM (Long Short-Term Memory) network with one layer and hidden size equal to the model dimension (\(d_{\text{model}} = 256\)):
+**Data flow.** This architecture modifies the transformer backbone itself, not just the gate. The temporal self-attention sub-layer is replaced by a bidirectional LSTM (Long Short-Term Memory) network with one layer and hidden size equal to the model dimension ($d_{\text{model}} = 256$):
 
-\[
+$$
 \mathbf{h}_1, \ldots, \mathbf{h}_8 = \text{BiLSTM}(x_1, \ldots, x_8)
-\]
+$$
 
-where \(x_t \in \mathbb{R}^{158}\) is the feature vector on day \(t\) of the 8-day lookback. The BiLSTM processes the sequence both forward (day 1 → day 8) and backward (day 8 → day 1), concatenating the hidden states. This gives each time step a representation that depends on both past and future context within the 8-day window.
+where $x_t \in \mathbb{R}^{158}$ is the feature vector on day $t$ of the 8-day lookback. The BiLSTM processes the sequence both forward (day 1 → day 8) and backward (day 8 → day 1), concatenating the hidden states. This gives each time step a representation that depends on both past and future context within the 8-day window.
 
 The spatial cross-attention sub-layer remains unchanged. The gate for feature-level attention is the same linear gate as Base MASTER.
 
@@ -140,16 +140,16 @@ The spatial cross-attention sub-layer remains unchanged. The gate for feature-le
 
 ### 2.5 LGBM-LeafInput — Discrete Regime Embeddings in Attention
 
-**Data flow.** A LightGBM regression tree with 63 leaves is trained to predict stock returns from the 63 market features. Rather than using the tree's predicted value, this architecture uses the *leaf index*—which of the 63 terminal leaves each sample falls into. This leaf index (an integer from 0 to 62) is mapped to a learned embedding vector \(\mathbf{e} \in \mathbb{R}^{d_{\text{model}}}\) via an embedding lookup table:
+**Data flow.** A LightGBM regression tree with 63 leaves is trained to predict stock returns from the 63 market features. Rather than using the tree's predicted value, this architecture uses the *leaf index*—which of the 63 terminal leaves each sample falls into. This leaf index (an integer from 0 to 62) is mapped to a learned embedding vector $\mathbf{e} \in \mathbb{R}^{d_{\text{model}}}$ via an embedding lookup table:
 
-\[
+$$
 \ell = \text{LGBM-leaf}(\mathbf{m}), \quad \ell \in \{0, \ldots, 62\}
-\]
-\[
+$$
+$$
 \mathbf{e} = \text{Embedding}[\ell], \quad \mathbf{e} \in \mathbb{R}^{256}
-\]
+$$
 
-This regime embedding \(\mathbf{e}\) is injected into the spatial cross-attention layer: it is concatenated with the stock features before the attention computation, so the attention mechanism can condition on "which regime are we in?" when deciding which features to attend to. The leaf embedding is trained end-to-end with the rest of the model.
+This regime embedding $\mathbf{e}$ is injected into the spatial cross-attention layer: it is concatenated with the stock features before the attention computation, so the attention mechanism can condition on "which regime are we in?" when deciding which features to attend to. The leaf embedding is trained end-to-end with the rest of the model.
 
 **What it should do (in theory).** The tree acts as a regime classifier, partitioning the 63-dimensional market feature space into 63 discrete regions. Leaf 0 might correspond to "low volatility, positive trend," leaf 15 to "high volatility, negative trend," etc. The embedding provides the transformer with a concise regime identifier—a 256-dimensional vector that encodes "you are in regime type K." The spatial attention can then learn regime-specific attention patterns: attend to momentum in leaf 0, attend to defensive features in leaf 15.
 
@@ -157,16 +157,16 @@ This regime embedding \(\mathbf{e}\) is injected into the spatial cross-attentio
 
 ### 2.6 Cross-Attention Gate — Market-Feature Cross-Attention
 
-**Data flow.** Unlike all previous gates, which produce a flat weight vector \(\mathbf{w} \in \mathbb{R}^{158}\), the cross-attention gate allows the market features and stock features to *interact* before producing the modulation. The computation follows the standard attention formula:
+**Data flow.** Unlike all previous gates, which produce a flat weight vector $\mathbf{w} \in \mathbb{R}^{158}$, the cross-attention gate allows the market features and stock features to *interact* before producing the modulation. The computation follows the standard attention formula:
 
-\[
+$$
 \text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right) V
-\]
+$$
 
 where:
-- **Query (\(Q\)):** A learned linear projection of the 63 market features, \(\mathbf{Q} = \mathbf{m}\mathbf{W}^Q\), producing a query vector of dimension \(d_k = 64\).
-- **Keys (\(K\)) and Values (\(V\)):** Learned linear projections of the 158 stock-level features (using only the most recent day's values, not the full 8-day sequence), \(\mathbf{K} = \mathbf{x}\mathbf{W}^K\), \(\mathbf{V} = \mathbf{x}\mathbf{W}^V\), each producing 158 vectors of dimension \(d_k = 64\).
-- **Output:** The attention output is a weighted sum of the value vectors, where the weights are determined by how well each stock feature's key matches the market query. This is projected back to \(\mathbb{R}^{158}\) to produce the attention mask \(\mathbf{w}\).
+- **Query ($Q$):** A learned linear projection of the 63 market features, $\mathbf{Q} = \mathbf{m}\mathbf{W}^Q$, producing a query vector of dimension $d_k = 64$.
+- **Keys ($K$) and Values ($V$):** Learned linear projections of the 158 stock-level features (using only the most recent day's values, not the full 8-day sequence), $\mathbf{K} = \mathbf{x}\mathbf{W}^K$, $\mathbf{V} = \mathbf{x}\mathbf{W}^V$, each producing 158 vectors of dimension $d_k = 64$.
+- **Output:** The attention output is a weighted sum of the value vectors, where the weights are determined by how well each stock feature's key matches the market query. This is projected back to $\mathbb{R}^{158}$ to produce the attention mask $\mathbf{w}$.
 
 With 2 attention heads, the market can pose two different "questions" about the stock features simultaneously. Head 1 might ask "which features are related to volatility?" while Head 2 asks "which features are related to momentum?"
 
@@ -178,13 +178,13 @@ With 2 attention heads, the market can pose two different "questions" about the 
 
 **Data flow.** This hybrid combines the tree from §2.3 with the multi-expert structure from §2.2. The data flow has three stages:
 
-1. **Regime detection (tree).** A LightGBM tree takes the 63 market features and outputs a 158-dimensional vector \(\mathbf{w}^{\text{tree}}\). Unlike §2.3, this tree output is not blended with a neural prior—it directly controls the router.
+1. **Regime detection (tree).** A LightGBM tree takes the 63 market features and outputs a 158-dimensional vector $\mathbf{w}^{\text{tree}}$. Unlike §2.3, this tree output is not blended with a neural prior—it directly controls the router.
 
-2. **Expert routing.** The tree output \(\mathbf{w}^{\text{tree}}\) is fed (along with the original market features) into a router network that produces expert selection probabilities \(\mathbf{p} \in \mathbb{R}^3\). The key difference from §2.2: the router sees both the raw market features AND the tree's interpretation of them.
+2. **Expert routing.** The tree output $\mathbf{w}^{\text{tree}}$ is fed (along with the original market features) into a router network that produces expert selection probabilities $\mathbf{p} \in \mathbb{R}^3$. The key difference from §2.2: the router sees both the raw market features AND the tree's interpretation of them.
 
-3. **Expert attention masks.** Three expert networks (each a 63 → 158 linear layer) produce attention masks \(\mathbf{w}^{(1)}, \mathbf{w}^{(2)}, \mathbf{w}^{(3)}\). The final mask is \(\mathbf{w} = \sum_k p_k \mathbf{w}^{(k)}\).
+3. **Expert attention masks.** Three expert networks (each a 63 → 158 linear layer) produce attention masks $\mathbf{w}^{(1)}, \mathbf{w}^{(2)}, \mathbf{w}^{(3)}$. The final mask is $\mathbf{w} = \sum_k p_k \mathbf{w}^{(k)}$.
 
-The mixing coefficient (§2.3's \(\alpha = 0.2\)) is not needed here because the tree doesn't directly produce the attention mask—it produces the *routing decision*. The tree says "we are in regime type A" and the router says "regime A → use Expert 2." This separation is cleaner: the tree handles the discrete classification problem (which regime?), the experts handle the continuous regression problem (what attention weights for this regime?).
+The mixing coefficient (§2.3's $\alpha = 0.2$) is not needed here because the tree doesn't directly produce the attention mask—it produces the *routing decision*. The tree says "we are in regime type A" and the router says "regime A → use Expert 2." This separation is cleaner: the tree handles the discrete classification problem (which regime?), the experts handle the continuous regression problem (what attention weights for this regime?).
 
 **Why it should be the best.** This is the only architecture that cleanly separates two distinct sub-problems: (1) *regime identification*—partitioning market conditions into discrete categories—which trees do well; and (2) *within-regime attention*—learning the optimal feature weighting for each category—which neural networks do well. The tree's threshold splits on VN100 volatility and momentum features detect regime boundaries; the experts learn specialized attention strategies for each side of those boundaries.
 
@@ -216,65 +216,65 @@ All models were trained for 40 epochs with early stopping (training halts when l
 
 ### 3.3 Evaluation Metrics — Definitions and Formulas
 
-All metrics are computed on the test set (2024–2025 data, which no model saw during training). Let \(N\) be the number of trading days in the test period, and let \(K_t\) be the number of stocks with predictions on day \(t\). For each day \(t\), the model produces a vector of predicted returns \(\hat{\mathbf{y}}_t \in \mathbb{R}^{K_t}\) and we observe actual returns \(\mathbf{y}_t \in \mathbb{R}^{K_t}\).
+All metrics are computed on the test set (2024–2025 data, which no model saw during training). Let $N$ be the number of trading days in the test period, and let $K_t$ be the number of stocks with predictions on day $t$. For each day $t$, the model produces a vector of predicted returns $\hat{\mathbf{y}}_t \in \mathbb{R}^{K_t}$ and we observe actual returns $\mathbf{y}_t \in \mathbb{R}^{K_t}$.
 
 **IC (Information Coefficient).** The Pearson cross-sectional correlation between predicted and actual returns, averaged over all test days:
 
-\[
+$$
 IC = \frac{1}{N} \sum_{t=1}^{N} \frac{\sum_{i=1}^{K_t} (\hat{y}_{t,i} - \bar{\hat{y}}_t)(y_{t,i} - \bar{y}_t)}{\sqrt{\sum_i (\hat{y}_{t,i} - \bar{\hat{y}}_t)^2 \sum_i (y_{t,i} - \bar{y}_t)^2}}
-\]
+$$
 
 Intuitively: "when the model says stock A will outperform stock B, how often is the ordering correct?" An IC of 0 means random guessing; 0.10 is modest; 0.30 is strong. The mean ± std reported is across the 5 random seeds, not across days.
 
 **ICIR (IC Information Ratio).** The mean of daily IC values divided by their standard deviation over time:
 
-\[
+$$
 ICIR = \frac{\text{mean}(IC_1, \ldots, IC_N)}{\text{std}(IC_1, \ldots, IC_N)}
-\]
+$$
 
 This measures *consistency across time*. A model with IC = 0.25 ± 0.05 day-to-day (ICIR = 5.0) is far more reliable than one with IC = 0.25 ± 0.20 (ICIR = 1.25). The first model is reliably right; the second is sometimes right and sometimes wrong.
 
-**Rank IC (RIC).** Same structure as IC, but replaces Pearson \(r\) with Spearman's \(\rho\) (rank correlation). Concretely: on each day, replace each stock's predicted and actual returns with their ranks (1 = best, \(K_t\) = worst), then compute the Pearson correlation of those ranks. This eliminates sensitivity to outliers—a single stock with an extreme ±10% return will not dominate.
+**Rank IC (RIC).** Same structure as IC, but replaces Pearson $r$ with Spearman's $\rho$ (rank correlation). Concretely: on each day, replace each stock's predicted and actual returns with their ranks (1 = best, $K_t$ = worst), then compute the Pearson correlation of those ranks. This eliminates sensitivity to outliers—a single stock with an extreme ±10% return will not dominate.
 
-\[
+$$
 RIC = \frac{1}{N} \sum_{t=1}^{N} \rho(\text{rank}(\hat{\mathbf{y}}_t),\; \text{rank}(\mathbf{y}_t))
-\]
+$$
 
 **Rank ICIR.** The consistency of Rank IC:
 
-\[
+$$
 RICIR = \frac{\text{mean}(RIC_1, \ldots, RIC_N)}{\text{std}(RIC_1, \ldots, RIC_N)}
-\]
+$$
 
 **AR (Annualized Return).** This is the actual portfolio return an investor would earn by following the model's recommendations. The procedure, executed at each trading day's close:
 
 1. **Rank.** Sort all 100 stocks by the model's predicted 5-day forward return, from highest to lowest.
-2. **Select.** Take the top \(K = 30\) stocks. The choice of 30 reflects a concentrated but diversified portfolio—enough stocks to reduce idiosyncratic risk, few enough that the model's ranking skill matters.
+2. **Select.** Take the top $K = 30$ stocks. The choice of 30 reflects a concentrated but diversified portfolio—enough stocks to reduce idiosyncratic risk, few enough that the model's ranking skill matters.
 3. **Allocate.** Invest equal capital in each of the 30 stocks at the next day's closing price. (We use next-day close because today's close has already passed when the prediction is made; the earliest executable price is tomorrow's close.)
 4. **Hold.** Each purchased stock is held for exactly 5 trading days, then sold at that day's closing price.
 5. **Deduct costs.** Each trade (buy and sell) incurs a 0.2% transaction cost (20 basis points), modeling brokerage fees, bid-ask spread, and market impact for a moderate-sized order in the Vietnamese market.
-6. **Repeat daily.** Every day, a new cohort of 30 stocks is purchased. The portfolio at any moment holds 5 overlapping daily cohorts (days \(t-4, t-3, t-2, t-1, t\)), each containing 30 stocks. This overlapping structure smooths returns and reduces day-to-day volatility.
+6. **Repeat daily.** Every day, a new cohort of 30 stocks is purchased. The portfolio at any moment holds 5 overlapping daily cohorts (days $t-4, t-3, t-2, t-1, t$), each containing 30 stocks. This overlapping structure smooths returns and reduces day-to-day volatility.
 
-The daily portfolio return \(r_t^{\text{portfolio}}\) is the equal-weighted average return of all currently held positions, net of the transaction costs incurred that day. The annualized return compounds these daily returns:
+The daily portfolio return $r_t^{\text{portfolio}}$ is the equal-weighted average return of all currently held positions, net of the transaction costs incurred that day. The annualized return compounds these daily returns:
 
-\[
+$$
 AR = \left( \prod_{t=1}^{N} (1 + r_t^{\text{portfolio}}) \right)^{252 / N} - 1
-\]
+$$
 
-where \(N\) is the number of trading days in the test period and 252 is the approximate number of Vietnamese trading days per year. For context: if AR = 0.05, the strategy earns roughly 5% per year after costs—comparable to a fixed-income instrument but with equity-like volatility. If AR = 0.10, the strategy is generating equity-like returns with potential alpha above the market. The VN100 index itself returned approximately 8–12% annualized over 2024–2025, so an AR above ~0.10 represents genuine outperformance.
+where $N$ is the number of trading days in the test period and 252 is the approximate number of Vietnamese trading days per year. For context: if AR = 0.05, the strategy earns roughly 5% per year after costs—comparable to a fixed-income instrument but with equity-like volatility. If AR = 0.10, the strategy is generating equity-like returns with potential alpha above the market. The VN100 index itself returned approximately 8–12% annualized over 2024–2025, so an AR above ~0.10 represents genuine outperformance.
 
 **IR (Information Ratio).** AR tells you *how much* you earn; IR tells you *how smoothly* you earn it. Formally, IR is the annualized mean of daily portfolio returns divided by their annualized standard deviation:
 
-\[
+$$
 IR = \frac{\bar{r} \times 252}{\sigma_r \times \sqrt{252}} = \frac{\bar{r}}{\sigma_r} \times \sqrt{252}
-\]
+$$
 
-where \(\bar{r}\) is the mean daily portfolio return and \(\sigma_r\) is its standard deviation. The \(\sqrt{252}\) factor annualizes the ratio.
+where $\bar{r}$ is the mean daily portfolio return and $\sigma_r$ is its standard deviation. The $\sqrt{252}$ factor annualizes the ratio.
 
 Intuitively, IR measures the *consistency* of the strategy's daily profits. Consider two strategies that both earn AR = 0.07 (7% per year):
 
-- Strategy A gains roughly +0.028% every single day, like clockwork. \(\sigma_r\) is tiny → IR is high (~5.0).
-- Strategy B gains +0.5% on some days and loses −0.4% on others, averaging out to +0.028%. \(\sigma_r\) is large → IR is low (~0.5).
+- Strategy A gains roughly +0.028% every single day, like clockwork. $\sigma_r$ is tiny → IR is high (~5.0).
+- Strategy B gains +0.5% on some days and loses −0.4% on others, averaging out to +0.028%. $\sigma_r$ is large → IR is low (~0.5).
 
 Strategy A is far more valuable: you can leverage it safely, it survives drawdowns, and it inspires confidence during losing streaks. Strategy B might earn the same AR but the ride is stomach-churning.
 
@@ -290,9 +290,9 @@ Before discussing model results, we need to understand the data itself. If one d
 
 ### 4.1 The Label Distribution: What Are We Trying to Predict?
 
-The label is the 5-day forward return for each stock. Let \(y\) denote the label values across all training samples. We characterize its distribution using the following metrics:
+The label is the 5-day forward return for each stock. Let $y$ denote the label values across all training samples. We characterize its distribution using the following metrics:
 
-\[
+$$
 \begin{aligned}
 \text{Mean: } & \mu = \frac{1}{n}\sum_{i=1}^{n} y_i \quad\text{(average weekly return)} \\
 \text{Standard deviation: } & \sigma = \sqrt{\frac{1}{n}\sum_{i=1}^{n} (y_i - \mu)^2} \quad\text{(typical weekly move)} \\
@@ -301,22 +301,22 @@ The label is the 5-day forward return for each stock. Let \(y\) denote the label
 \text{Tail ratio: } & \frac{P_{99} - P_1}{P_{95} - P_5} \quad\text{(how much fatter are the extreme 2% tails than the middle 90%?)} \\
 \text{Signal-to-noise: } & \frac{|\mu|}{\sigma} \quad\text{(absolute mean relative to typical variation)}
 \end{aligned}
-\]
+$$
 
-where \(P_k\) denotes the \(k\)-th percentile of the label distribution.
+where $P_k$ denotes the $k$-th percentile of the label distribution.
 
 Here is the distribution of labels in each training set:
 
 | Property | 3-Year | 5-Year | 10-Year | Formula |
 |----------|--------|--------|---------|---------|
-| Training samples (\(n\)) | 23,481 | 94,807 | 144,866 | — |
-| Label mean (\(\mu\)) | **−0.0061** | +0.0045 | +0.0034 | \(\frac{1}{n}\sum y_i\) |
-| Label std (\(\sigma\)) | **0.0693** | 0.0575 | 0.0535 | \(\sqrt{\frac{1}{n}\sum (y_i-\mu)^2}\) |
-| Skewness (\(\gamma_1\)) | **−0.11** | +0.14 | **+0.46** | \(\mathbb{E}[((y-\mu)/\sigma)^3]\) |
-| Kurtosis (\(\kappa\)) | **4.84** | 6.76 | **9.27** | \(\mathbb{E}[((y-\mu)/\sigma)^4]\) |
-| Tail ratio | **1.62** | 1.74 | **1.80** | \((P_{99}-P_1)/(P_{95}-P_5)\) |
-| % positive labels | **45.3%** | 52.0% | 49.0% | \(\frac{1}{n}\sum \mathbf{1}[y_i > 0]\) |
-| Signal-to-noise (\(|\mu|/\sigma\)) | **0.088** | 0.079 | 0.064 | \(|\mu|/\sigma\) |
+| Training samples ($n$) | 23,481 | 94,807 | 144,866 | — |
+| Label mean ($\mu$) | **−0.0061** | +0.0045 | +0.0034 | $\frac{1}{n}\sum y_i$ |
+| Label std ($\sigma$) | **0.0693** | 0.0575 | 0.0535 | $\sqrt{\frac{1}{n}\sum (y_i-\mu)^2}$ |
+| Skewness ($\gamma_1$) | **−0.11** | +0.14 | **+0.46** | $\mathbb{E}[((y-\mu)/\sigma)^3]$ |
+| Kurtosis ($\kappa$) | **4.84** | 6.76 | **9.27** | $\mathbb{E}[((y-\mu)/\sigma)^4]$ |
+| Tail ratio | **1.62** | 1.74 | **1.80** | $(P_{99}-P_1)/(P_{95}-P_5)$ |
+| % positive labels | **45.3%** | 52.0% | 49.0% | $\frac{1}{n}\sum \mathbf{1}[y_i > 0]$ |
+| Signal-to-noise ($|\mu|/\sigma$) | **0.088** | 0.079 | 0.064 | $|\mu|/\sigma$ |
 
 **The 3-year dataset is dominated by a bear market.** The mean label of −0.0061 means that across all 23,481 stock-weeks in the 2022–2023 training window, the average stock *lost* 0.61% per week. Annualized (multiply by 52), that is roughly −27% per year. Only 45.3% of labels are positive—the model spends most of its training seeing stocks go down. The negative skew (−0.11) means that when large moves occur, they tend to be crashes rather than rallies: the left tail is fatter than the right tail. A model trained on this data learns that "stocks go down" is the default state; it receives weak reinforcement for predicting positive returns. When tested on 2024–2025 (a recovery period where stocks mostly rise), this learned pessimism translates into missed opportunities—the model systematically underranks stocks that go on to rally.
 
@@ -326,41 +326,41 @@ Here is the distribution of labels in each training set:
 
 ### 4.2 Regime Diversity: How Often Does the Market Change Its Mind?
 
-We quantify regime diversity using three technical frameworks applied to the equal-weighted VN100 index proxy. Let \(P_t\) be the index level on day \(t\) and \(R_t = P_t / P_{t-1} - 1\) be the daily return.
+We quantify regime diversity using three technical frameworks applied to the equal-weighted VN100 index proxy. Let $P_t$ be the index level on day $t$ and $R_t = P_t / P_{t-1} - 1$ be the daily return.
 
 **Trend regime** — defined by the relationship between two moving averages:
 
-\[
+$$
 MA50_t = \frac{1}{50}\sum_{k=0}^{49} P_{t-k}, \quad MA200_t = \frac{1}{200}\sum_{k=0}^{199} P_{t-k}
-\]
+$$
 
-The regime is 1 (uptrend) when \(MA50_t > MA200_t\) (a "golden cross" configuration) and 0 (downtrend) otherwise. A regime *transition* occurs when this binary state flips.
+The regime is 1 (uptrend) when $MA50_t > MA200_t$ (a "golden cross" configuration) and 0 (downtrend) otherwise. A regime *transition* occurs when this binary state flips.
 
 **Volatility regime** — based on rolling 20-day annualized volatility:
 
-\[
+$$
 \sigma_{20}(t) = \sqrt{252 \cdot \frac{1}{20}\sum_{k=0}^{19} (R_{t-k} - \bar{R}_{20})^2}
-\]
+$$
 
-where \(\bar{R}_{20}\) is the 20-day mean return. Days are assigned to quartiles of the historical \(\sigma_{20}\) distribution: low volatility (Q1), medium-low (Q2), medium-high (Q3), or high volatility (Q4). A transition occurs when a day's quartile differs from the previous day's.
+where $\bar{R}_{20}$ is the 20-day mean return. Days are assigned to quartiles of the historical $\sigma_{20}$ distribution: low volatility (Q1), medium-low (Q2), medium-high (Q3), or high volatility (Q4). A transition occurs when a day's quartile differs from the previous day's.
 
 **Drawdown regime** — the percentage decline from the all-time high:
 
-\[
+$$
 DD_t = \frac{P_t - \max_{k \leq t} P_k}{\max_{k \leq t} P_k}
-\]
+$$
 
-\(DD_t\) is always ≤ 0. We bucket into four severity levels: normal (\(DD_t > -5\%\)), correction (\(-15\% < DD_t \leq -5\%\)), bear market (\(-30\% < DD_t \leq -15\%\)), and crash (\(DD_t \leq -30\%\)).
+$DD_t$ is always ≤ 0. We bucket into four severity levels: normal ($DD_t > -5\%$), correction ($-15\% < DD_t \leq -5\%$), bear market ($-30\% < DD_t \leq -15\%$), and crash ($DD_t \leq -30\%$).
 
 For each framework, we count how many times the regime *changes* during the training period. More transitions = more diverse market conditions = harder for the model to memorize any single regime.
 
-**Regime entropy** quantifies the *balance* of time spent across states. For a discrete probability distribution over \(K\) regime states with proportions \(p_1, \ldots, p_K\):
+**Regime entropy** quantifies the *balance* of time spent across states. For a discrete probability distribution over $K$ regime states with proportions $p_1, \ldots, p_K$:
 
-\[
+$$
 H = -\sum_{k=1}^{K} p_k \log_2(p_k)
-\]
+$$
 
-Maximum entropy (all states equally frequent) for \(K=4\) is \(\log_2(4) = 2.0\). Minimum entropy (always in one state) is 0. Entropy captures distribution *balance*; transition count captures *change frequency*. Both matter: a dataset can have high entropy (balanced across states) but low transitions (long uninterrupted periods in each state), or vice versa.
+Maximum entropy (all states equally frequent) for $K=4$ is $\log_2(4) = 2.0$. Minimum entropy (always in one state) is 0. Entropy captures distribution *balance*; transition count captures *change frequency*. Both matter: a dataset can have high entropy (balanced across states) but low transitions (long uninterrupted periods in each state), or vice versa.
 
 #### 4.2.1 Regime Transition Counts
 
@@ -397,35 +397,35 @@ The 10-year dataset has the most balanced distribution: 44% normal, 25% bear, on
 
 Beyond the regime frameworks above, we count how often three classical technical indicators reach extreme levels during each training period. These counts measure how many "edge case" examples the model encounters during training.
 
-**RSI (Relative Strength Index)** — a bounded momentum oscillator (0–100) that measures the speed and magnitude of recent price changes. Let \(\Delta_t = P_t - P_{t-1}\) be the price change. Define the average gain and average loss over a 14-day window:
+**RSI (Relative Strength Index)** — a bounded momentum oscillator (0–100) that measures the speed and magnitude of recent price changes. Let $\Delta_t = P_t - P_{t-1}$ be the price change. Define the average gain and average loss over a 14-day window:
 
-\[
+$$
 \text{AvgGain}_{14}(t) = \frac{1}{14}\sum_{k=0}^{13} \max(\Delta_{t-k}, 0), \quad \text{AvgLoss}_{14}(t) = \frac{1}{14}\sum_{k=0}^{13} \max(-\Delta_{t-k}, 0)
-\]
+$$
 
-\[
+$$
 RSI_t = 100 - \frac{100}{1 + \frac{\text{AvgGain}_{14}(t)}{\text{AvgLoss}_{14}(t) + \varepsilon}}
-\]
+$$
 
-where \(\varepsilon = 10^{-12}\) prevents division by zero. RSI > 70 is considered *overbought* (the asset has risen too fast and may reverse downward); RSI < 30 is *oversold* (it has fallen too fast and may bounce). These extremes are mean-reversion signals: they mark moments when momentum has potentially exhausted itself.
+where $\varepsilon = 10^{-12}$ prevents division by zero. RSI > 70 is considered *overbought* (the asset has risen too fast and may reverse downward); RSI < 30 is *oversold* (it has fallen too fast and may bounce). These extremes are mean-reversion signals: they mark moments when momentum has potentially exhausted itself.
 
-**Bollinger Bands** — volatility envelopes around a moving average. Let \(\text{MA20}_t\) be the 20-day simple moving average and \(\sigma_{20}(t)\) the 20-day standard deviation of price:
+**Bollinger Bands** — volatility envelopes around a moving average. Let $\text{MA20}_t$ be the 20-day simple moving average and $\sigma_{20}(t)$ the 20-day standard deviation of price:
 
-\[
+$$
 \text{UpperBand}_t = \text{MA20}_t + 2 \cdot \sigma_{20}(t), \quad \text{LowerBand}_t = \text{MA20}_t - 2 \cdot \sigma_{20}(t)
-\]
+$$
 
-The band *width* is \(4 \cdot \sigma_{20}(t)\). A *Bollinger Band breakout* occurs when the width expands to more than 1.5× its value 20 days ago, signaling a volatility expansion event. These are transition moments: the market is shifting from a low-volatility to a high-volatility regime (or vice versa).
+The band *width* is $4 \cdot \sigma_{20}(t)$. A *Bollinger Band breakout* occurs when the width expands to more than 1.5× its value 20 days ago, signaling a volatility expansion event. These are transition moments: the market is shifting from a low-volatility to a high-volatility regime (or vice versa).
 
-**ADX (Average Directional Index)** — a trend strength indicator (0–100) derived from directional movement. Let \(+DM_t = \max(P_t - P_{t-1}, 0)\) (upward movement) and \(-DM_t = \max(P_{t-1} - P_t, 0)\) (downward movement). The true range is \(TR_t = \max(P_t - P_{t-1}, |P_t - P_{t-1}|, |P_{t-1} - P_t|)\) — actually the max of high-low, high-prevclose, low-prevclose. For our index proxy we use \(|P_t - P_{t-1}|\). Then:
+**ADX (Average Directional Index)** — a trend strength indicator (0–100) derived from directional movement. Let $+DM_t = \max(P_t - P_{t-1}, 0)$ (upward movement) and $-DM_t = \max(P_{t-1} - P_t, 0)$ (downward movement). The true range is $TR_t = \max(P_t - P_{t-1}, |P_t - P_{t-1}|, |P_{t-1} - P_t|)$ — actually the max of high-low, high-prevclose, low-prevclose. For our index proxy we use $|P_t - P_{t-1}|$. Then:
 
-\[
+$$
 +DI_{14} = 100 \cdot \frac{\text{EMA}_{14}(+DM)}{\text{EMA}_{14}(TR)}, \quad -DI_{14} = 100 \cdot \frac{\text{EMA}_{14}(-DM)}{\text{EMA}_{14}(TR)}
-\]
+$$
 
-\[
+$$
 DX_t = 100 \cdot \frac{|+DI_{14} - -DI_{14}|}{+DI_{14} + -DI_{14} + \varepsilon}, \quad ADX_t = \text{EMA}_{14}(DX_t)
-\]
+$$
 
 ADX > 25 indicates a *trending* market (directional movement dominates); ADX < 25 indicates a *ranging* market (price moves sideways). An ADX switch occurs when the index crosses the 25 threshold. These are regime-change signals: the market transitions from directionless chop to a sustained trend (or vice versa).
 
@@ -440,20 +440,20 @@ The 10-year dataset provides **3–9 times more technical extreme events** than 
 
 ### 4.3 Cross-Sectional Dispersion: Are Stocks Different From Each Other?
 
-If all 100 stocks move together (high correlation), stock picking is impossible—you can't rank what moves in lockstep. Cross-sectional dispersion measures how much stock returns *differ* from each other on a given day. For each trading day \(t\) with \(K_t\) stocks, we compute the standard deviation of labels across stocks:
+If all 100 stocks move together (high correlation), stock picking is impossible—you can't rank what moves in lockstep. Cross-sectional dispersion measures how much stock returns *differ* from each other on a given day. For each trading day $t$ with $K_t$ stocks, we compute the standard deviation of labels across stocks:
 
-\[
+$$
 CS_t = \sqrt{\frac{1}{K_t}\sum_{i=1}^{K_t} (y_{t,i} - \bar{y}_t)^2}
-\]
+$$
 
-where \(\bar{y}_t\) is the mean label across all stocks on day \(t\). High \(CS_t\) means stocks are moving in different directions—there is room for stock picking to add value. Low \(CS_t\) means all stocks move together—even a perfect ranking produces little differentiation.
+where $\bar{y}_t$ is the mean label across all stocks on day $t$. High $CS_t$ means stocks are moving in different directions—there is room for stock picking to add value. Low $CS_t$ means all stocks move together—even a perfect ranking produces little differentiation.
 
 We also measure the P95−P5 spread: the gap between the 95th and 5th percentile stock on each day, capturing the return difference between a top-decile and bottom-decile pick.
 
 | Metric | 3-Year | 5-Year | 10-Year |
 |--------|--------|--------|---------|
 | Trading days in training | 240 | 992 | 1,736 |
-| Mean cross-sectional std (\(CS_t\)) | **0.0510** | 0.0438 | 0.0424 |
+| Mean cross-sectional std ($CS_t$) | **0.0510** | 0.0438 | 0.0424 |
 | Mean P95−P5 spread | **0.159** | 0.134 | 0.126 |
 | % days with P95−P5 > 5% | 100.0% | 100.0% | 100.0% |
 
@@ -463,43 +463,43 @@ The 3-year dataset shows the *highest* cross-sectional dispersion (0.051)—a di
 
 ### 4.4 Feature-Label Stability: Do Features Mean the Same Thing Over Time?
 
-This is perhaps the most revealing analysis. Let \(f_j\) be the \(j\)-th feature (of 158) and \(y\) be the label. We split the training set at its chronological midpoint into an early period \(E\) (first half) and late period \(L\) (second half). For each period, we compute the Pearson correlation between each feature and the label:
+This is perhaps the most revealing analysis. Let $f_j$ be the $j$-th feature (of 158) and $y$ be the label. We split the training set at its chronological midpoint into an early period $E$ (first half) and late period $L$ (second half). For each period, we compute the Pearson correlation between each feature and the label:
 
-\[
+$$
 c_j^E = \text{corr}(f_j^E, y^E), \quad c_j^L = \text{corr}(f_j^L, y^L), \quad j = 1,\ldots,158
-\]
+$$
 
 We then measure three forms of stability:
 
-\[
+$$
 \begin{aligned}
 \text{Correlation stability: } & r_{\text{stab}} = \text{corr}(\mathbf{c}^E, \mathbf{c}^L) \quad\text{(Pearson r between the two 158-d correlation vectors)} \\
 \text{Sign flip fraction: } & \frac{1}{158}\sum_{j=1}^{158} \mathbf{1}[c_j^E \cdot c_j^L < 0] \quad\text{(fraction of features that reverse direction)} \\
 \text{Rank stability: } & \rho(\text{rank}(|\mathbf{c}^E|),\; \text{rank}(|\mathbf{c}^L|)) \quad\text{(Spearman ρ of feature importance ranks)}
 \end{aligned}
-\]
+$$
 
 | Property | 3-Year | 5-Year | 10-Year | Formula |
 |----------|--------|--------|---------|---------|
-| Feature-label correlation stability | **0.919** | 0.806 | **0.915** | \(\text{corr}(\mathbf{c}^E, \mathbf{c}^L)\) |
-| Sign flip fraction | **0.120** | 0.196 | **0.108** | \(\frac{1}{158}\sum \mathbf{1}[c_j^E \cdot c_j^L < 0]\) |
-| Feature importance rank stability | **0.029** | −0.036 | −0.163 | \(\rho(\text{rank}(|\mathbf{c}^E|), \text{rank}(|\mathbf{c}^L|))\) |
+| Feature-label correlation stability | **0.919** | 0.863 | **0.915** | $\text{corr}(\mathbf{c}^E, \mathbf{c}^L)$ |
+| Sign flip fraction | **0.120** | 0.158 | **0.108** | $\frac{1}{158}\sum \mathbf{1}[c_j^E \cdot c_j^L < 0]$ |
+| Feature importance rank stability | **0.029** | −0.098 | −0.163 | $\rho(\text{rank}(|\mathbf{c}^E|), \text{rank}(|\mathbf{c}^L|))$ |
 
 **Caveat for 3-year data:** With only 23,481 total samples split into halves (11,740 per half) across 158 features, each per-feature correlation is estimated from roughly 74 observations. This produces wide confidence intervals — the apparently high stability (0.919) may partially reflect noisy estimates regressing toward zero in both halves rather than genuine stability. The 5-year and 10-year estimates, with 4× and 6× more samples per half, are more reliable.
 
-**Interpretation:** On the 10-year dataset, the vector of feature-label correlations is 91.5% consistent between the first and second halves of training. If MA20 is positively correlated with returns in 2016–2019 (\(c_{MA20}^E > 0\)), it is still positively correlated in 2020–2022 (\(c_{MA20}^L > 0\)). On the 5-year dataset, stability drops to 80.6%. The sign flip fraction nearly doubles from 10.8% to 19.6%—**one in five features reverses its directional relationship** between the early and late training period. For example, a momentum feature that was bullish in 2020–2021 (\(c > 0\)) becomes bearish in 2022 (\(c < 0\)) as the market transitions from bull to bear.
+**Interpretation:** On the 10-year dataset, the vector of feature-label correlations is 91.5% consistent between the first and second halves of training. If MA20 is positively correlated with returns in 2016–2019 ($c_{MA20}^E > 0$), it is still positively correlated in 2020–2022 ($c_{MA20}^L > 0$). On the 5-year dataset, stability drops to 86.3%. The sign flip fraction rises from 10.8% to 15.8%—**roughly one in six features reverses its directional relationship** between the early and late training period. For example, a momentum feature that was bullish in 2020–2021 ($c > 0$) becomes bearish in 2022 ($c < 0$) as the market transitions from bull to bear.
 
 The negative rank stability in both datasets (features most important early are slightly *anti-correlated* with features most important late) suggests that the optimal feature set shifts over time. This is the core challenge that attention gating addresses: when which features deserve attention changes, the attention mechanism needs market context to redirect focus appropriately.
 
 ### 4.5 Temporal Autocorrelation: Persistence of Returns
 
-For each stock, let \(y_1, y_2, \ldots, y_T\) be its sequence of labels (5-day forward returns) over time. The lag-1 autocorrelation measures whether consecutive labels are related:
+For each stock, let $y_1, y_2, \ldots, y_T$ be its sequence of labels (5-day forward returns) over time. The lag-1 autocorrelation measures whether consecutive labels are related:
 
-\[
+$$
 \rho_1 = \frac{\sum_{t=1}^{T-1} (y_t - \bar{y})(y_{t+1} - \bar{y})}{\sum_{t=1}^{T} (y_t - \bar{y})^2}
-\]
+$$
 
-We compute \(\rho_1\) for each of the 20 most liquid stocks and report the mean. Values near +1 indicate strong momentum (positive returns follow positive returns); values near −1 indicate strong mean-reversion; values near 0 indicate no persistence.
+We compute $\rho_1$ for each of the 20 most liquid stocks and report the mean. Values near +1 indicate strong momentum (positive returns follow positive returns); values near −1 indicate strong mean-reversion; values near 0 indicate no persistence.
 
 | Dataset | Mean Lag-1 Autocorrelation | Range (across 20 stocks) |
 |---------|---------------------------|--------------------------|
@@ -513,17 +513,17 @@ This is good news for any model: even a simple trend-following rule achieves pos
 
 ### 4.6 Market Feature Information Content
 
-The 63 market features are not equally informative. Let \(g_j\) be the \(j\)-th gate (market) feature and \(y\) be the label. We compute the Pearson correlation between each market feature and the label across all training samples:
+The 63 market features are not equally informative. Let $g_j$ be the $j$-th gate (market) feature and $y$ be the label. We compute the Pearson correlation between each market feature and the label across all training samples:
 
-\[
+$$
 r_j = \frac{\sum_{i=1}^{n} (g_{i,j} - \bar{g}_j)(y_i - \bar{y})}{\sqrt{\sum_i (g_{i,j} - \bar{g}_j)^2 \sum_i (y_i - \bar{y})^2}}, \quad j = 1,\ldots,63
-\]
+$$
 
-The informativeness of market features varies with horizon. Below are the top-5 most label-correlated market features for each training set, ranked by absolute Pearson \(r\).
+The informativeness of market features varies with horizon. Below are the top-5 most label-correlated market features for each training set, ranked by absolute Pearson $r$.
 
 **10-Year (2016–2022):**
 
-| Market Feature | \(r\) with Label | Interpretation |
+| Market Feature | $r$ with Label | Interpretation |
 |---------------|-----------------|----------------|
 | VN100_RET_STD_10 | **−0.040** | Higher recent return volatility → lower future returns |
 | VN100_VOL_STD_20 | **−0.039** | More volatile volume → lower future returns |
@@ -535,7 +535,7 @@ Mean absolute gate-label correlation: 0.011. All significant correlations are ne
 
 **5-Year (2020–2023):**
 
-| Market Feature | \(r\) with Label | Interpretation |
+| Market Feature | $r$ with Label | Interpretation |
 |---------------|-----------------|----------------|
 | VN100_RET_MEAN_60 | **−0.033** | Longer-term market momentum → weakly negative |
 | VN100_RET_STD_20 | **−0.032** | Return volatility → lower future returns |
@@ -547,7 +547,7 @@ Mean absolute gate-label correlation: 0.008. Correlations are weaker and noisier
 
 **3-Year (2022–2023):**
 
-| Market Feature | \(r\) with Label | Interpretation |
+| Market Feature | $r$ with Label | Interpretation |
 |---------------|-----------------|----------------|
 | VN100_RET_MEAN_60 | **−0.066** | Strong bear-market momentum: falling market → continued falls |
 | VN100_RET_STD_60 | +0.052 | Return-of-volatility: turbulent recovery rallies |
@@ -725,7 +725,7 @@ The 10-year dataset provides **2–3× more regime transitions** across trend, v
 
 ### 6.3 Feature Stability (Consistency)
 
-Feature-label correlations are 13.6% more stable on 10-year data (r = 0.915 vs 0.806; §4.4). With fewer features reversing their directional relationship, the model spends less capacity reconciling contradictory signals and more capacity learning nuanced interactions.
+Feature-label correlations are 6.0% more stable on 10-year data (r = 0.915 vs 0.863; §4.4). With fewer features reversing their directional relationship, the model spends less capacity reconciling contradictory signals and more capacity learning nuanced interactions.
 
 ### 6.4 Signal Quality (Tail Richness)
 
