@@ -316,7 +316,7 @@ Here is the distribution of labels in each training set:
 | Kurtosis ($\kappa$) | **4.84** | 6.76 | **9.27** | $\mathbb{E}[((y-\mu)/\sigma)^4]$ |
 | Tail ratio | **1.62** | 1.74 | **1.80** | $(P_{99}-P_1)/(P_{95}-P_5)$ |
 | % positive labels | **45.3%** | 52.0% | 49.0% | $\frac{1}{n}\sum \mathbf{1}[y_i > 0]$ |
-| Signal-to-noise ($|\mu|/\sigma$) | **0.088** | 0.079 | 0.064 | $|\mu|/\sigma$ |
+| Signal-to-noise ($\vert\mu\vert/\sigma$) | **0.088** | 0.079 | 0.064 | $\vert\mu\vert/\sigma$ |
 
 **The 3-year dataset is dominated by a bear market.** The mean label of −0.0061 means that across all 23,481 stock-weeks in the 2022–2023 training window, the average stock *lost* 0.61% per week. Annualized (multiply by 52), that is roughly −27% per year. Only 45.3% of labels are positive—the model spends most of its training seeing stocks go down. The negative skew (−0.11) means that when large moves occur, they tend to be crashes rather than rallies: the left tail is fatter than the right tail. A model trained on this data learns that "stocks go down" is the default state; it receives weak reinforcement for predicting positive returns. When tested on 2024–2025 (a recovery period where stocks mostly rise), this learned pessimism translates into missed opportunities—the model systematically underranks stocks that go on to rally.
 
@@ -483,7 +483,7 @@ $$
 |----------|--------|--------|---------|---------|
 | Feature-label correlation stability | **0.919** | 0.863 | **0.915** | $\text{corr}(\mathbf{c}^E, \mathbf{c}^L)$ |
 | Sign flip fraction | **0.120** | 0.158 | **0.108** | $\frac{1}{158}\sum \mathbf{1}[c_j^E \cdot c_j^L < 0]$ |
-| Feature importance rank stability | **0.029** | −0.098 | −0.163 | $\rho(\text{rank}(|\mathbf{c}^E|), \text{rank}(|\mathbf{c}^L|))$ |
+| Feature importance rank stability | **0.029** | −0.098 | −0.163 | $\rho(\text{rank}(\vert\mathbf{c}^E\vert), \text{rank}(\vert\mathbf{c}^L\vert))$ |
 
 **Caveat for 3-year data:** With only 23,481 total samples split into halves (11,740 per half) across 158 features, each per-feature correlation is estimated from roughly 74 observations. This produces wide confidence intervals — the apparently high stability (0.919) may partially reflect noisy estimates regressing toward zero in both halves rather than genuine stability. The 5-year and 10-year estimates, with 4× and 6× more samples per half, are more reliable.
 
