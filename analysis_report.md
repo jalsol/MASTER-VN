@@ -288,7 +288,34 @@ Benchmark values: IR > 1.0 is respectable (you earn more than the noise); IR > 2
 
 Before discussing model results, we need to understand the data itself. If one dataset is fundamentally harder to predict than another, that matters.
 
-### 4.1 The Label Distribution: What Are We Trying to Predict?
+### 4.1 What the Training Data Looks Like: Market Context and Label Distribution
+
+Before examining labels, we first establish what the VN100 index actually did during each training window. The equal-weighted index proxy (average close price of all 100 constituent stocks) provides the macroeconomic backdrop against which individual stock returns play out.
+
+#### 4.1.1 Market-Level Statistics
+
+| Metric | 3-Year (2022–2023) | 5-Year (2020–2023) | 10-Year (2016–2022) |
+|--------|---------------------|---------------------|----------------------|
+| Trading days | 498 | 1,000 | 1,652 |
+| Cumulative return | **−15.9%** | +58.5% | **+98.3%** |
+| Annualized return (μ) | −6.0% | +14.2% | +12.5% |
+| Annualized volatility (σ) | 23.4% | 22.7% | 20.2% |
+| Sharpe ratio | **−0.26** | +0.63 | +0.62 |
+| Max drawdown | −43.2% | −43.2% | −43.2% |
+| Daily return skew | −0.74 | −1.06 | −0.90 |
+| Daily return kurtosis | 4.96 | 6.45 | 7.24 |
+| Bull years (>+10%) | 1 of 2 | 3 of 4 | **4 of 7** |
+| Bear years (<−10%) | 1 of 2 | 1 of 4 | 1 of 7 |
+| +3σ rally days / −3σ crash days | 1 / 7 | 2 / 15 | 7 / 23 |
+| Win/loss ratio (avg up / avg down) | 0.64 | 0.69 | **0.83** |
+
+**The 3-year window is a bear market.** The index fell 15.9% cumulatively with a negative Sharpe ratio (−0.26). There were 7 crash days (−3σ) against only 1 rally day (+3σ)—downside extremes outnumbered upside extremes 7:1. Down days were larger in magnitude than up days (win/loss ratio 0.64). A model trained here rarely sees the market rise strongly.
+
+**The 10-year window is the healthiest.** The index nearly doubled (+98.3%) with 4 bull years against 1 bear year. The win/loss ratio (0.83) is the best—up days and down days are closer in magnitude, giving the model a more symmetric training signal. Despite having the most crash days in absolute count (23), these are spread across 7 years and balanced by 7 rally days—the model learns that both extremes occur.
+
+**The 5-year window sits between.** Strong cumulative return (+58.5%) but daily skew is paradoxically the most negative (−1.06). This is the COVID effect: the 2020 crash produced extreme negative daily outliers (−6.8%, −6.0% single-day drops) concentrated in a few weeks, pulling daily skew negative even as the cumulative return is strong. The label distribution, computed at a 5-day horizon across stocks, smooths these daily extremes.
+
+#### 4.1.2 Label Distribution
 
 The label is the 5-day forward return for each stock. Let $y$ denote the label values across all training samples. We characterize its distribution using the following metrics:
 
@@ -323,6 +350,20 @@ Here is the distribution of labels in each training set:
 **The 10-year dataset provides the healthiest training distribution.** With 144,866 samples spanning 2016–2022, the mean is modestly positive (+0.0034, or roughly +19% annualized). Skewness is positive (+0.46)—large positive moves outnumber large negative moves, reflecting the presence of strong bull markets (2017, 2020–2021) in the training data. Kurtosis of 9.27 is **three times the normal distribution's value of 3.0**, meaning extreme ±5%+ weekly moves occur far more often than a Gaussian model would predict. The model sees abundant tail events—COVID crash (−30% in Q1 2020), V-shaped recovery (+40% in Q2–Q3 2020), 2022 rate-hike selloff (−35%)—and must learn to predict through all of them.
 
 **The signal-to-noise ratio is highest for 3-year data—but misleadingly so.** The value 0.088 is driven by the large *negative* mean (−0.0061), not by genuine predictability. A naive model that always predicts "stocks go down" achieves decent-looking metrics during a bear market but fails catastrophically when the regime changes. Genuine predictability comes from *cross-sectional variation* (differences *between* stocks), not from a strong directional bias shared by all stocks.
+
+#### 4.1.3 Reconciling Market and Label Distributions
+
+A reviewer may notice an apparent contradiction: the market-level daily return skew is *negative* across all three training windows (−0.74 to −1.06), yet the label skew is *positive* for 5Y and 10Y (+0.14, +0.46). If the index has more large down days than up days, how can the stock-level 5-day forward returns exhibit positive skew?
+
+The answer lies in three structural differences between the two distributions:
+
+**1. Time horizon (1-day vs. 5-day).** The market-level statistics in §4.1.1 are computed from daily close-to-close returns. The label is a 5-day forward return measured from *tomorrow's* close: $y_t = P_{t+5} / P_{t+1} - 1$. The 5-day aggregation smooths the extreme daily outliers that drive negative skew. A −6% single-day crash contributes fully to daily return skew but is diluted to roughly −1.2% per day when averaged into a 5-day window. Conversely, sustained rallies (several +1% days in a row) compound positively over 5 days. The longer horizon shifts probability mass from the left tail toward the center and right tail.
+
+**2. Aggregation level (index vs. cross-section).** The market statistics describe *one* time series (the VN100 index). The label distribution pools *all stocks across all days* — roughly 23K to 145K observations. Individual stocks can and do have positive 5-day returns even when the index falls. The cross-sectional distribution of stock returns has different skew properties than the single-index time series because it reflects *relative* stock movements (some up, some down) rather than *aggregate* market direction. In a bear market, the cross-sectional mean shifts negative but the *shape* of the cross-section can remain symmetric or even positively skewed if a minority of stocks rally strongly while most decline modestly.
+
+**3. The overnight gap elimination.** The label formula $P_{t+5} / P_{t+1} - 1$ skips the overnight return from day $t$ to day $t+1$. Gap-down openings (common during crashes) are excluded from the label. Since crashes often manifest as overnight gaps — the market opens significantly lower than it closed — removing this component reduces the negative skew in the label relative to close-to-close daily returns.
+
+The market-level statistics in §4.1.1 and the label distribution in §4.1.2 should be read as complementary, not redundant. The market-level data establishes *what environment the model trained in* (bear market, bull market, or mixed). The label distribution describes *what the model was asked to predict* within that environment. The fact that label skew can be positive even in a negatively skewed market is not a contradiction — it is a consequence of the 5-day horizon and cross-sectional construction. Both are reported transparently so the reader can assess whether the training environment matches the test environment.
 
 ### 4.2 Regime Diversity: How Often Does the Market Change Its Mind?
 
