@@ -1,0 +1,31 @@
+# ── Data (large binaries, not for version control) ──
+data/
+raw_csv/
+
+# ── Model checkpoints ──
+model/
+*.pth
+*.pt
+*.ckpt
+
+# ── Python cache & virtualenv ──
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# ── IDE & OS ──
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ── Original MASTER README (kept for reference, not the project README) ──
+README-MASTER.md
+
+# ── Misc ──
+*.log
+*.tmp
+uv.lock
